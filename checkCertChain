@@ -1,0 +1,95 @@
+# Path to the OpenSSL executable
+$opensslPath = "C:\Program Files\OpenSSL-Win64\bin\openssl.exe"
+
+# Path to the certificate chain file
+$certChainFile = ".\cert_chain.pem"
+
+# Function to check if OpenSSL is installed and accessible
+function Check-OpenSSL {
+    if (-Not (Test-Path $opensslPath)) {
+        Write-Host "OpenSSL is not installed or the path is incorrect."
+        exit
+    }
+}
+
+# Function to verify the certificate chain order and completeness
+function Verify-CertificateChain {
+    param (
+        [string]$certChainFile
+    )
+
+    # Run OpenSSL command to check certificate chain
+    $certCheckCmd = & $opensslPath verify -CAfile $certChainFile $certChainFile
+
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "Certificate chain is in correct order and complete."
+        return $true
+    } else {
+        Write-Host "Certificate chain is either incomplete or in the wrong order."
+        return $false
+    }
+}
+
+# Function to attempt completion using OS certificate store
+function Complete-Chain-Using-OSStore {
+    Write-Host "Attempting to complete the chain using OS certificate store..."
+
+    # Extract each certificate from the chain
+    $certs = & $opensslPath crl2pkcs7 -nocrl -certfile $certChainFile | & $opensslPath pkcs7 -print_certs -text
+
+    # For each certificate, check if it's in the local certificate store
+    foreach ($cert in $certs) {
+        $certSubject = ($cert | Select-String "Subject:").Line
+
+        $certCheckInStore = Get-ChildItem Cert:\LocalMachine\Root, Cert:\CurrentUser\Root | Where-Object { $_.Subject -eq $certSubject }
+
+        if (-Not $certCheckInStore) {
+            Write-Host "Certificate $certSubject not found in OS certificate store."
+            return $false
+        }
+    }
+
+    Write-Host "Certificate chain completed using OS store."
+    return $true
+}
+
+# Function to attempt completion using the internet
+function Complete-Chain-Using-Internet {
+    Write-Host "Attempting to complete the chain using online sources..."
+
+    # Use OpenSSL to download missing intermediates
+    $certDownloadCmd = & $opensslPath s_client -connect www.google.com:443 -showcerts
+
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "Downloaded missing intermediates."
+        return $true
+    } else {
+        Write-Host "Failed to complete the chain using the internet."
+        return $false
+    }
+}
+
+# Main logic
+Check-OpenSSL
+
+if (Test-Path $certChainFile) {
+    $isComplete = Verify-CertificateChain -certChainFile $certChainFile
+
+    if (-Not $isComplete) {
+        $userChoice = Read-Host "The certificate chain is incomplete. Would you like to complete it using (1) OS certificate store or (2) Internet?"
+
+        switch ($userChoice) {
+            "1" {
+                Complete-Chain-Using-OSStore
+            }
+            "2" {
+                Complete-Chain-Using-Internet
+            }
+            default {
+                Write-Host "Invalid choice. Exiting."
+            }
+        }
+    }
+} else {
+    Write-Host "Certificate chain file not found. Exiting."
+}
